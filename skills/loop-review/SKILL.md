@@ -1,9 +1,10 @@
 ---
 name: loop-review
 description: >
-  Review agent for Loop pipeline. Evaluates a PR against six quality criteria
-  and produces a structured review verdict. Use when performing a Loop review phase,
-  when user says "review PR #N", or "/loop-review".
+  Review agent for Loop pipeline. Evaluates a PR against quality criteria
+  and produces a structured review verdict.
+allowed-tools: Read, Glob, Grep, Bash(read-only commands)
+argument-hint: "[PR context]"
 ---
 
 # Review Phase
@@ -52,9 +53,11 @@ Read `PR_DIFF` thoroughly. For each changed file, understand:
 
 You may also explore the codebase (read-only) to understand surrounding context — for example, how a modified function is called elsewhere, or what existing tests cover.
 
-### 3. Evaluate against review criteria
+### 3. Load and apply review criteria
 
-Assess the PR against each of the following six criteria. Assign a severity to each:
+Read each criterion file in [criteria/](criteria/) and evaluate the PR against it. Each criterion file defines what to check and severity guidance.
+
+Apply the standard severity scale to each criterion:
 
 | Severity | Meaning |
 |---|---|
@@ -62,38 +65,6 @@ Assess the PR against each of the following six criteria. Assign a severity to e
 | **note** | Minor observation. Non-blocking. Informational or style preference. |
 | **warning** | Should be addressed but is not a blocker on its own. |
 | **fail** | Must be fixed before merge. Blocks the PR. |
-
-#### Criterion 1: Correctness
-- Does the code do what the issue requires?
-- Are there logic errors, off-by-one mistakes, race conditions, or unhandled edge cases?
-- Does the code handle error cases and invalid inputs appropriately?
-
-#### Criterion 2: Code Quality
-- Does the code follow the project's existing style, conventions, and patterns?
-- Are names clear and consistent with the codebase?
-- Is there unnecessary complexity, dead code, or duplication?
-- Are imports, exports, and module boundaries clean?
-
-#### Criterion 3: Copy and UX
-- If the change includes user-facing text (error messages, labels, documentation), is it clear, correct, and consistent with existing copy?
-- If it adds UI changes, are they accessible and consistent with existing UX patterns?
-- If not applicable, mark as **pass** with "N/A — no user-facing changes."
-
-#### Criterion 4: Security
-- Does the change introduce any security concerns? (injection, auth bypass, data exposure, unsafe deserialization, etc.)
-- Are secrets, tokens, or credentials handled properly?
-- If not applicable, mark as **pass** with "N/A — no security-sensitive changes."
-
-#### Criterion 5: Tests
-- Are there tests for the new or changed behavior?
-- Do the tests cover meaningful cases, not just the happy path?
-- Are existing tests still valid, or do any need updating for the new behavior?
-- If the design specified a test plan, is it fulfilled?
-
-#### Criterion 6: Design Adherence
-- Does the implementation match the design that was agreed upon in the issue?
-- If there are deviations, are they justified and noted?
-- Are the right files modified, and only the right files?
 
 ### 4. Produce the review output
 
@@ -109,23 +80,10 @@ Your response MUST end with a review in exactly this structure:
 ### Summary
 [1-2 sentence summary of the PR and your overall assessment.]
 
-### Correctness: [pass|note|warning|fail]
+### [Criterion Name]: [pass|note|warning|fail]
 [Findings with inline code references, e.g., `src/parser.ts:42`]
 
-### Code Quality: [pass|note|warning|fail]
-[Findings with inline code references]
-
-### Copy/UX: [pass|note|warning|fail]
-[Findings or "N/A — no user-facing changes."]
-
-### Security: [pass|note|warning|fail]
-[Findings or "N/A — no security-sensitive changes."]
-
-### Tests: [pass|note|warning|fail]
-[Findings with inline code references]
-
-### Design Adherence: [pass|note|warning|fail]
-[Findings comparing implementation to the design]
+(repeat for each criterion loaded from criteria/)
 
 ### Verdict
 

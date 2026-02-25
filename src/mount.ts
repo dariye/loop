@@ -245,7 +245,9 @@ async function stepSkillInstall(ctx: WizardContext, root: string, profile: Proje
 
   if (choice === 1) {
     showStatus(ctx, "Skills installed as editable templates", [
-      { icon: "✎", label: "Edit", value: ".claude/skills/loop-*/SKILL.md" },
+      { icon: "✎", label: "Edit skills", value: ".claude/skills/loop-*/SKILL.md" },
+      { icon: "✎", label: "Edit review criteria", value: ".claude/skills/loop-review/criteria/*.md" },
+      { icon: "+", label: "Add criteria", value: "Add .md files to criteria/ to extend review" },
     ])
     await Bun.sleep(500)
   }

@@ -2,8 +2,9 @@
 name: loop-design
 description: >
   Design agent for Loop pipeline. Analyzes a GitHub issue, explores the codebase,
-  and produces a structured design document. Use when performing a Loop design phase,
-  when user says "design issue #N", or "/loop-design".
+  and produces a structured design document.
+allowed-tools: Read, Glob, Grep, Bash(read-only commands)
+argument-hint: "[issue context]"
 ---
 
 # Design Phase

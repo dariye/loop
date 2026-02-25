@@ -2,8 +2,9 @@
 name: loop-build
 description: >
   Build agent for Loop pipeline. Implements changes from a design document,
-  runs tests, and commits the result. Use when performing a Loop build phase,
-  when user says "build issue #N", or "/loop-build".
+  runs tests, and commits the result.
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash
+argument-hint: "[design + issue context]"
 ---
 
 # Build Phase

@@ -339,13 +339,25 @@ jobs:
           echo "::group::Running Claude ($DISC phase, model=$MODEL, budget=\$$BUDGET)"
           echo "Tools: $TOOLS"
 
-          # Invoke the phase skill directly — no --system-prompt needed
+          # Read skill content, stripping YAML frontmatter
+          # Skills can't be invoked via /slash-command in headless (-p) mode,
+          # so we read the file and pass it via --append-system-prompt.
+          SKILL_FILE=".claude/skills/loop-${DISC}/SKILL.md"
+          if [[ -f "$SKILL_FILE" ]]; then
+            SKILL_CONTENT=$(sed '1{/^---$/!q;};1,/^---$/d' "$SKILL_FILE")
+          else
+            echo "::error::Skill file not found: $SKILL_FILE"
+            echo "Run 'loop mount' to install skills."
+            exit 1
+          fi
+
           claude -p \
             --model "$MODEL" \
+            --append-system-prompt "$SKILL_CONTENT" \
             --permission-mode bypassPermissions \
             --allowedTools "$TOOLS" \
             --max-budget-usd "$BUDGET" \
-            "/loop-${DISC} $(cat /tmp/user_prompt.txt)" \
+            "$(cat /tmp/user_prompt.txt)" \
             | tee /tmp/claude_output.txt
 
           echo "::endgroup::"

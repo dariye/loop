@@ -2,8 +2,9 @@
 name: loop-fix
 description: >
   Fix agent for Loop pipeline. Addresses review feedback from a failed review
-  and pushes fixes to get the PR passing. Use when performing a Loop fix phase,
-  when user says "fix PR #N", or "/loop-fix".
+  and pushes fixes to get the PR passing.
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash
+argument-hint: "[review feedback + PR context]"
 ---
 
 # Fix Phase

@@ -1,4 +1,4 @@
-import { resolve, dirname } from "path";
+import { resolve } from "path";
 
 async function gitRoot(): Promise<string> {
   const proc = Bun.spawn(["git", "rev-parse", "--show-toplevel"], {
@@ -94,7 +94,8 @@ export async function installSkills(root: string): Promise<string[]> {
   const installed: string[] = [];
 
   for (const skill of phases) {
-    const srcPath = resolve(packageRoot, "skills", skill, "SKILL.md");
+    const srcDir = resolve(packageRoot, "skills", skill);
+    const srcPath = resolve(srcDir, "SKILL.md");
     const srcFile = Bun.file(srcPath);
     if (!(await srcFile.exists())) continue;
 
@@ -107,6 +108,33 @@ export async function installSkills(root: string): Promise<string[]> {
 
     const content = await srcFile.text();
     await Bun.write(resolve(destDir, "SKILL.md"), content);
+
+    // Copy criteria/ subdirectory if it exists (e.g., loop-review)
+    const criteriaDir = resolve(srcDir, "criteria");
+    const lsProc = Bun.spawn(["ls", criteriaDir], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const lsOut = await new Response(lsProc.stdout).text();
+    const lsCode = await lsProc.exited;
+    if (lsCode === 0 && lsOut.trim().length > 0) {
+      const destCriteriaDir = resolve(destDir, "criteria");
+      const mkCriteriaProc = Bun.spawn(["mkdir", "-p", destCriteriaDir], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await mkCriteriaProc.exited;
+
+      for (const filename of lsOut.trim().split("\n")) {
+        if (!filename.endsWith(".md")) continue;
+        const critSrc = Bun.file(resolve(criteriaDir, filename));
+        if (await critSrc.exists()) {
+          const critContent = await critSrc.text();
+          await Bun.write(resolve(destCriteriaDir, filename), critContent);
+        }
+      }
+    }
+
     installed.push(skill);
   }
 
