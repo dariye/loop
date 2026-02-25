@@ -1,0 +1,698 @@
+# =============================================================================
+# Loop — AI-powered issue-to-PR pipeline
+# =============================================================================
+# Copy this file to .github/workflows/loop.yml in your repository.
+#
+# Phases:
+#   design  — analyze an issue and produce a design document
+#   build   — implement the design as code, open a PR
+#   review  — review a PR for correctness and quality
+#   fix     — apply fixes based on review feedback
+#
+# Required secrets:
+#   ANTHROPIC_API_KEY  — API key for Claude
+#   LOOP_PAT           — Personal Access Token (needed for auto-chaining,
+#                        since GITHUB_TOKEN cannot trigger workflow_dispatch)
+# =============================================================================
+
+name: Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      disc:
+        description: "Phase to run"
+        required: true
+        type: choice
+        options:
+          - design
+          - build
+          - review
+          - fix
+      issue:
+        description: "Issue number (required for design/build)"
+        required: false
+        type: string
+      pr:
+        description: "PR number (required for review/fix)"
+        required: false
+        type: string
+      chain:
+        description: "Auto-chain to next phase"
+        required: false
+        type: boolean
+        default: false
+      model:
+        description: "Claude model to use"
+        required: false
+        type: string
+        default: "sonnet"
+      budget:
+        description: "Max budget in USD"
+        required: false
+        type: string
+        default: "5"
+      max_fix_rounds:
+        description: "Max fix/review loops remaining"
+        required: false
+        type: string
+        default: "3"
+
+# ---------------------------------------------------------------------------
+# Concurrency: one run per disc+target at a time, but never cancel in-progress
+# ---------------------------------------------------------------------------
+concurrency:
+  group: "loop-${{ inputs.disc }}-${{ inputs.issue || inputs.pr }}"
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      DISC: ${{ inputs.disc }}
+      ISSUE: ${{ inputs.issue }}
+      PR: ${{ inputs.pr }}
+      MODEL: ${{ inputs.model }}
+      BUDGET: ${{ inputs.budget }}
+      CHAIN: ${{ inputs.chain }}
+      MAX_FIX_ROUNDS: ${{ inputs.max_fix_rounds }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Validate inputs — ensure phase/issue/pr combinations make sense
+      # -----------------------------------------------------------------------
+      - name: Validate inputs
+        run: |
+          echo "::group::Input validation"
+          echo "disc=$DISC issue=$ISSUE pr=$PR chain=$CHAIN model=$MODEL budget=$BUDGET max_fix_rounds=$MAX_FIX_ROUNDS"
+
+          if [[ "$DISC" == "design" || "$DISC" == "build" ]]; then
+            if [[ -z "$ISSUE" ]]; then
+              echo "::error::disc=$DISC requires an issue number"
+              exit 1
+            fi
+          fi
+
+          if [[ "$DISC" == "review" || "$DISC" == "fix" ]]; then
+            if [[ -z "$PR" ]]; then
+              echo "::error::disc=$DISC requires a PR number"
+              exit 1
+            fi
+          fi
+
+          # Budget must be a positive number
+          if ! echo "$BUDGET" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::budget must be a positive number, got: $BUDGET"
+            exit 1
+          fi
+
+          # Max fix rounds must be a non-negative integer
+          if ! echo "$MAX_FIX_ROUNDS" | grep -qE '^[0-9]+$'; then
+            echo "::error::max_fix_rounds must be a non-negative integer, got: $MAX_FIX_ROUNDS"
+            exit 1
+          fi
+
+          if [[ "$DISC" == "fix" && "$MAX_FIX_ROUNDS" == "0" ]]; then
+            echo "::error::max_fix_rounds is 0 — refusing to run another fix round"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+          echo "Inputs valid."
+
+      # -----------------------------------------------------------------------
+      # 2. Checkout — full history so Claude can inspect git log, blame, etc.
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # 3. Setup Node.js (required by Claude Code CLI)
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # -----------------------------------------------------------------------
+      # 4. Install Claude Code CLI
+      # -----------------------------------------------------------------------
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      # -----------------------------------------------------------------------
+      # 5. Fetch issue context (design/build discs, or when issue is provided)
+      # -----------------------------------------------------------------------
+      - name: Fetch issue context
+        id: issue_context
+        if: inputs.issue != ''
+        run: |
+          echo "::group::Fetching issue #$ISSUE"
+
+          # Fetch the full issue payload
+          ISSUE_JSON=$(gh issue view "$ISSUE" --json title,body,comments,labels)
+          ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
+          ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
+          ISSUE_COMMENTS=$(echo "$ISSUE_JSON" | jq -r '
+            .comments[]? | "### Comment by \(.author.login) at \(.createdAt)\n\(.body)\n"
+          ')
+          ISSUE_LABELS=$(echo "$ISSUE_JSON" | jq -r '.labels[].name')
+
+          echo "Issue: #$ISSUE — $ISSUE_TITLE"
+
+          # Check for epic:N labels and fetch epic context if present
+          EPIC_CONTEXT=""
+          EPIC_NUM=$(echo "$ISSUE_LABELS" | grep -oP '^epic:\K\d+$' || true)
+          if [[ -n "$EPIC_NUM" ]]; then
+            echo "Found epic label: epic:$EPIC_NUM — fetching epic issue"
+            EPIC_JSON=$(gh issue view "$EPIC_NUM" --json title,body)
+            EPIC_TITLE=$(echo "$EPIC_JSON" | jq -r '.title')
+            EPIC_BODY=$(echo "$EPIC_JSON" | jq -r '.body // ""')
+            EPIC_CONTEXT=$(cat <<EPICEOF
+
+          --- EPIC CONTEXT (issue #$EPIC_NUM) ---
+          Title: $EPIC_TITLE
+
+          $EPIC_BODY
+          --- END EPIC CONTEXT ---
+          EPICEOF
+            )
+          fi
+
+          # Write context to files to avoid shell quoting issues
+          {
+            echo "--- ISSUE #$ISSUE ---"
+            echo "Title: $ISSUE_TITLE"
+            echo ""
+            echo "$ISSUE_BODY"
+            echo ""
+            if [[ -n "$ISSUE_COMMENTS" ]]; then
+              echo "--- ISSUE COMMENTS ---"
+              echo "$ISSUE_COMMENTS"
+            fi
+            if [[ -n "$EPIC_CONTEXT" ]]; then
+              echo "$EPIC_CONTEXT"
+            fi
+            echo "--- END ISSUE ---"
+          } > /tmp/issue_context.txt
+
+          echo "::endgroup::"
+
+      # -----------------------------------------------------------------------
+      # 6. Fetch PR context (review/fix discs, or when pr is provided)
+      # -----------------------------------------------------------------------
+      - name: Fetch PR context
+        id: pr_context
+        if: inputs.pr != ''
+        run: |
+          echo "::group::Fetching PR #$PR"
+
+          PR_JSON=$(gh pr view "$PR" --json title,body,diff,comments,headRefName)
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+          PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+          PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
+          PR_DIFF=$(echo "$PR_JSON" | jq -r '.diff // ""')
+          PR_COMMENTS=$(echo "$PR_JSON" | jq -r '
+            .comments[]? | "### Comment by \(.author.login) at \(.createdAt)\n\(.body)\n"
+          ')
+
+          echo "PR: #$PR — $PR_TITLE (branch: $PR_BRANCH)"
+
+          # Save branch name for later steps
+          echo "pr_branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "--- PR #$PR ---"
+            echo "Title: $PR_TITLE"
+            echo "Branch: $PR_BRANCH"
+            echo ""
+            echo "$PR_BODY"
+            echo ""
+            if [[ -n "$PR_COMMENTS" ]]; then
+              echo "--- PR COMMENTS ---"
+              echo "$PR_COMMENTS"
+            fi
+            echo ""
+            echo "--- PR DIFF ---"
+            echo "$PR_DIFF"
+            echo "--- END PR ---"
+          } > /tmp/pr_context.txt
+
+          echo "::endgroup::"
+
+      # -----------------------------------------------------------------------
+      # 7. Fetch design comment (for build disc — find the loop bot's design)
+      # -----------------------------------------------------------------------
+      - name: Fetch design comment
+        id: design_context
+        if: inputs.disc == 'build' && inputs.issue != ''
+        run: |
+          echo "::group::Fetching design comment from issue #$ISSUE"
+
+          # Look for the most recent comment that contains the design marker
+          # The design disc posts comments with a recognizable header
+          DESIGN_COMMENT=$(gh api \
+            "repos/${{ github.repository }}/issues/$ISSUE/comments" \
+            --jq '
+              [.[] | select(.body | test("## Design"; "i"))] | last | .body // ""
+            '
+          )
+
+          if [[ -n "$DESIGN_COMMENT" ]]; then
+            echo "Found design comment."
+            echo "$DESIGN_COMMENT" > /tmp/design_context.txt
+          else
+            echo "No design comment found — build will proceed without prior design."
+            echo "" > /tmp/design_context.txt
+          fi
+
+          echo "::endgroup::"
+
+      # -----------------------------------------------------------------------
+      # 8. Resolve system prompt — repo-local .loop/<disc>.md or bundled default
+      # -----------------------------------------------------------------------
+      - name: Resolve system prompt
+        id: system_prompt
+        run: |
+          REPO_PROMPT=".loop/${DISC}.md"
+
+          if [[ -f "$REPO_PROMPT" ]]; then
+            echo "Using repo-local system prompt: $REPO_PROMPT"
+            SYSTEM_PROMPT=$(cat "$REPO_PROMPT")
+          else
+            echo "No repo-local prompt at $REPO_PROMPT — using bundled default"
+
+            case "$DISC" in
+              design)
+                SYSTEM_PROMPT=$(cat <<'PROMPT'
+          You are a senior software architect. Analyze the provided issue and produce a
+          detailed design document. Your design should include:
+
+          1. **Summary** — restate the problem in your own words
+          2. **Approach** — describe the implementation strategy
+          3. **Files to change** — list specific files and what changes are needed
+          4. **Edge cases** — identify potential issues and how to handle them
+          5. **Testing strategy** — describe how the changes should be tested
+
+          Be thorough but concise. Reference specific files, functions, and line numbers
+          from the codebase when possible. Do NOT make any changes to the code — only
+          produce the design document as your final output.
+          PROMPT
+                )
+                ;;
+              build)
+                SYSTEM_PROMPT=$(cat <<'PROMPT'
+          You are a senior software engineer. Implement the changes described in the
+          design document and issue. Follow these principles:
+
+          1. Make minimal, focused changes that address the issue
+          2. Follow existing code style and conventions in the repository
+          3. Write clean, well-documented code
+          4. Add or update tests as appropriate
+          5. Do NOT modify files unrelated to the issue
+
+          After making all changes, output a brief summary of what you changed and why.
+          PROMPT
+                )
+                ;;
+              review)
+                SYSTEM_PROMPT=$(cat <<'PROMPT'
+          You are a senior code reviewer. Review the provided PR diff thoroughly.
+          Check for:
+
+          1. **Correctness** — does the code do what the issue/PR description says?
+          2. **Bugs** — are there logic errors, off-by-one errors, race conditions?
+          3. **Style** — does the code follow the repo's conventions?
+          4. **Security** — are there injection risks, credential leaks, etc.?
+          5. **Tests** — are changes adequately tested?
+          6. **Scope** — are there unnecessary changes outside the stated goal?
+
+          At the END of your review, output exactly one of these two markers on its own line:
+            REVIEW_PASS
+            REVIEW_FAIL
+
+          If you output REVIEW_FAIL, list the specific items that must be fixed.
+          PROMPT
+                )
+                ;;
+              fix)
+                SYSTEM_PROMPT=$(cat <<'PROMPT'
+          You are a senior software engineer. The PR has received review feedback
+          that must be addressed. Read the review comments carefully and make the
+          requested fixes. Follow these principles:
+
+          1. Address every piece of actionable feedback
+          2. Do not make unrelated changes
+          3. Follow existing code style
+          4. Update tests if the fixes require it
+
+          After making all fixes, output a brief summary of what you changed.
+          PROMPT
+                )
+                ;;
+            esac
+          fi
+
+          # Write system prompt to file to avoid quoting issues
+          echo "$SYSTEM_PROMPT" > /tmp/system_prompt.txt
+
+      # -----------------------------------------------------------------------
+      # 9. Run Claude Code
+      # -----------------------------------------------------------------------
+      - name: Run Claude Code
+        id: claude
+        run: |
+          # --- Assemble the user prompt from all available context ---
+          USER_PROMPT=""
+
+          # Include issue context if available
+          if [[ -f /tmp/issue_context.txt ]]; then
+            USER_PROMPT+=$(cat /tmp/issue_context.txt)
+            USER_PROMPT+=$'\n\n'
+          fi
+
+          # Include design context for build disc
+          if [[ "$DISC" == "build" && -f /tmp/design_context.txt ]]; then
+            DESIGN_CONTENT=$(cat /tmp/design_context.txt)
+            if [[ -n "$DESIGN_CONTENT" ]]; then
+              USER_PROMPT+="--- DESIGN DOCUMENT ---"$'\n'
+              USER_PROMPT+="$DESIGN_CONTENT"$'\n'
+              USER_PROMPT+="--- END DESIGN DOCUMENT ---"$'\n\n'
+            fi
+          fi
+
+          # Include PR context if available
+          if [[ -f /tmp/pr_context.txt ]]; then
+            USER_PROMPT+=$(cat /tmp/pr_context.txt)
+            USER_PROMPT+=$'\n\n'
+          fi
+
+          # Add disc-specific instructions to the user prompt
+          case "$DISC" in
+            design)
+              USER_PROMPT+="Produce a design document for the issue above. Explore the codebase to understand the architecture before designing."
+              ;;
+            build)
+              USER_PROMPT+="Implement the changes described above. Create or modify files as needed."
+              ;;
+            review)
+              USER_PROMPT+="Review the PR diff above. End your review with REVIEW_PASS or REVIEW_FAIL."
+              ;;
+            fix)
+              USER_PROMPT+="Fix the issues identified in the review comments above. Push fixes to the existing PR branch."
+              ;;
+          esac
+
+          # --- Determine allowed tools based on disc ---
+          case "$DISC" in
+            design|review)
+              # Read-only: no Edit, Write, or unrestricted Bash
+              TOOLS="Read,Glob,Grep,Bash(read-only commands)"
+              ;;
+            build|fix)
+              # Full access for code changes
+              TOOLS="Read,Glob,Grep,Edit,Write,Bash"
+              ;;
+          esac
+
+          # --- Read system prompt from file ---
+          SYSTEM_PROMPT=$(cat /tmp/system_prompt.txt)
+
+          # --- Write user prompt to file to handle large payloads ---
+          echo "$USER_PROMPT" > /tmp/user_prompt.txt
+
+          echo "::group::Running Claude ($DISC phase, model=$MODEL, budget=\$$BUDGET)"
+          echo "Tools: $TOOLS"
+
+          # Run Claude Code and capture output
+          claude -p \
+            --model "$MODEL" \
+            --system-prompt "$SYSTEM_PROMPT" \
+            --permission-mode bypassPermissions \
+            --allowedTools "$TOOLS" \
+            --max-budget-usd "$BUDGET" \
+            "$(cat /tmp/user_prompt.txt)" \
+            | tee /tmp/claude_output.txt
+
+          echo "::endgroup::"
+
+      # -----------------------------------------------------------------------
+      # 10. Post artifacts — handle output per disc
+      # -----------------------------------------------------------------------
+
+      # --- Design: post comment on issue, add label ---
+      - name: "Post artifacts (design)"
+        if: inputs.disc == 'design'
+        run: |
+          echo "::group::Posting design to issue #$ISSUE"
+
+          DESIGN_OUTPUT=$(cat /tmp/claude_output.txt)
+
+          # Post the design as an issue comment
+          COMMENT_BODY=$(cat <<EOF
+          ## Design
+
+          _Generated by Loop (design disc) — $(date -u +"%Y-%m-%dT%H:%M:%SZ")_
+
+          $DESIGN_OUTPUT
+          EOF
+          )
+
+          echo "$COMMENT_BODY" | gh issue comment "$ISSUE" --body-file -
+
+          # Add the designed label
+          gh issue edit "$ISSUE" --add-label "loop:designed"
+
+          echo "::endgroup::"
+          echo "Design posted to issue #$ISSUE"
+
+      # --- Build: create branch, commit, push, open PR ---
+      - name: "Post artifacts (build)"
+        id: build_artifacts
+        if: inputs.disc == 'build'
+        run: |
+          echo "::group::Creating PR from build output"
+
+          BRANCH="loop/issue-${ISSUE}"
+          ISSUE_TITLE=$(gh issue view "$ISSUE" --json title --jq '.title')
+
+          # Configure git for commits
+          git config user.name "loop[bot]"
+          git config user.email "loop[bot]@users.noreply.github.com"
+
+          # Create and switch to the feature branch
+          git checkout -b "$BRANCH"
+
+          # Stage all changes made by Claude
+          git add -A
+
+          # Check if there are changes to commit
+          if git diff --cached --quiet; then
+            echo "::warning::Claude made no file changes — skipping PR creation"
+            exit 0
+          fi
+
+          # Commit
+          git commit -m "feat: $ISSUE_TITLE
+
+          Closes #$ISSUE
+
+          Implemented by Loop (build disc)"
+
+          # Push
+          git push origin "$BRANCH" --force-with-lease
+
+          # Create PR
+          PR_URL=$(gh pr create \
+            --title "$ISSUE_TITLE" \
+            --body "$(cat <<EOF
+          Closes #$ISSUE
+
+          ## Summary
+
+          $(cat /tmp/claude_output.txt | head -50)
+
+          ---
+          _Generated by Loop (build disc)_
+          EOF
+          )" \
+            --head "$BRANCH" \
+          )
+
+          echo "PR created: $PR_URL"
+
+          # Extract PR number from URL
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          echo "::endgroup::"
+
+      # --- Review: parse REVIEW_PASS/REVIEW_FAIL, post gh pr review ---
+      - name: "Post artifacts (review)"
+        id: review_artifacts
+        if: inputs.disc == 'review'
+        run: |
+          echo "::group::Posting review to PR #$PR"
+
+          CLAUDE_OUTPUT=$(cat /tmp/claude_output.txt)
+
+          # Determine pass/fail from Claude's output
+          if echo "$CLAUDE_OUTPUT" | grep -q "REVIEW_PASS"; then
+            REVIEW_RESULT="PASS"
+            REVIEW_EVENT="APPROVE"
+            echo "Review result: PASS"
+          else
+            REVIEW_RESULT="FAIL"
+            REVIEW_EVENT="REQUEST_CHANGES"
+            echo "Review result: FAIL"
+          fi
+
+          echo "review_result=$REVIEW_RESULT" >> "$GITHUB_OUTPUT"
+
+          # Strip the REVIEW_PASS/REVIEW_FAIL marker from the body
+          REVIEW_BODY=$(echo "$CLAUDE_OUTPUT" | sed '/^REVIEW_PASS$/d; /^REVIEW_FAIL$/d')
+
+          # Post the review
+          FULL_REVIEW=$(cat <<EOF
+          _Loop review ($REVIEW_RESULT) — $(date -u +"%Y-%m-%dT%H:%M:%SZ")_
+
+          $REVIEW_BODY
+          EOF
+          )
+
+          echo "$FULL_REVIEW" | gh pr review "$PR" --event "$REVIEW_EVENT" --body-file -
+
+          echo "::endgroup::"
+          echo "Review ($REVIEW_RESULT) posted to PR #$PR"
+
+      # --- Fix: commit fixes, push to PR branch ---
+      - name: "Post artifacts (fix)"
+        if: inputs.disc == 'fix'
+        run: |
+          echo "::group::Committing fixes to PR #$PR"
+
+          # Get the PR branch and check it out
+          PR_BRANCH="${{ steps.pr_context.outputs.pr_branch }}"
+          git config user.name "loop[bot]"
+          git config user.email "loop[bot]@users.noreply.github.com"
+
+          git checkout "$PR_BRANCH"
+
+          # Stage all changes
+          git add -A
+
+          # Check if there are changes to commit
+          if git diff --cached --quiet; then
+            echo "::warning::Claude made no file changes — nothing to push"
+            exit 0
+          fi
+
+          # Commit the fixes
+          git commit -m "fix: address review feedback
+
+          Applied fixes from Loop (fix disc, round $((4 - ${MAX_FIX_ROUNDS:-3})))"
+
+          # Push to the PR branch
+          git push origin "$PR_BRANCH"
+
+          echo "::endgroup::"
+          echo "Fixes pushed to $PR_BRANCH"
+
+      # -----------------------------------------------------------------------
+      # 11. Auto-chain — trigger next disc if chain=true
+      # -----------------------------------------------------------------------
+      - name: Auto-chain to next disc
+        if: inputs.chain == 'true'
+        env:
+          # Use LOOP_PAT for chaining — GITHUB_TOKEN cannot trigger workflows
+          GH_TOKEN: ${{ secrets.LOOP_PAT }}
+        run: |
+          echo "::group::Auto-chaining"
+
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::LOOP_PAT secret is not set — cannot auto-chain (GITHUB_TOKEN cannot trigger workflow_dispatch)"
+            exit 1
+          fi
+
+          WORKFLOW_FILE="loop.yml"
+          REPO="${{ github.repository }}"
+
+          case "$DISC" in
+            design)
+              # design -> build
+              echo "Chaining: design -> build (issue #$ISSUE)"
+              gh workflow run "$WORKFLOW_FILE" \
+                -R "$REPO" \
+                -f disc=build \
+                -f issue="$ISSUE" \
+                -f chain=true \
+                -f model="$MODEL" \
+                -f budget="$BUDGET" \
+                -f max_fix_rounds="$MAX_FIX_ROUNDS"
+              ;;
+
+            build)
+              # build -> review (need the PR number from the build step)
+              NEW_PR="${{ steps.build_artifacts.outputs.pr_number }}"
+              if [[ -z "$NEW_PR" ]]; then
+                echo "::warning::No PR was created — cannot chain to review"
+                exit 0
+              fi
+              echo "Chaining: build -> review (issue #$ISSUE, PR #$NEW_PR)"
+              gh workflow run "$WORKFLOW_FILE" \
+                -R "$REPO" \
+                -f disc=review \
+                -f issue="$ISSUE" \
+                -f pr="$NEW_PR" \
+                -f chain=true \
+                -f model="$MODEL" \
+                -f budget="$BUDGET" \
+                -f max_fix_rounds="$MAX_FIX_ROUNDS"
+              ;;
+
+            review)
+              REVIEW_RESULT="${{ steps.review_artifacts.outputs.review_result }}"
+              if [[ "$REVIEW_RESULT" == "PASS" ]]; then
+                echo "Review passed — chain complete!"
+                exit 0
+              fi
+              # review (FAIL) -> fix
+              echo "Chaining: review (FAIL) -> fix (issue #$ISSUE, PR #$PR)"
+              gh workflow run "$WORKFLOW_FILE" \
+                -R "$REPO" \
+                -f disc=fix \
+                -f issue="$ISSUE" \
+                -f pr="$PR" \
+                -f chain=true \
+                -f model="$MODEL" \
+                -f budget="$BUDGET" \
+                -f max_fix_rounds="$MAX_FIX_ROUNDS"
+              ;;
+
+            fix)
+              # fix -> review (decrement remaining rounds)
+              REMAINING=$(( MAX_FIX_ROUNDS - 1 ))
+              if [[ "$REMAINING" -le 0 ]]; then
+                echo "::warning::Max fix rounds exhausted — stopping chain"
+                exit 0
+              fi
+              echo "Chaining: fix -> review (issue #$ISSUE, PR #$PR, $REMAINING rounds left)"
+              gh workflow run "$WORKFLOW_FILE" \
+                -R "$REPO" \
+                -f disc=review \
+                -f issue="$ISSUE" \
+                -f pr="$PR" \
+                -f chain=true \
+                -f model="$MODEL" \
+                -f budget="$BUDGET" \
+                -f max_fix_rounds="$REMAINING"
+              ;;
+          esac
+
+          echo "::endgroup::"

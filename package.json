@@ -1,0 +1,41 @@
+{
+  "name": "@dariye/loop",
+  "version": "0.1.0",
+  "description": "AI-powered issue-to-PR pipeline using Claude Code",
+  "type": "module",
+  "bin": {
+    "loop": "./bin/loop.ts"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "install/",
+    "discs/"
+  ],
+  "scripts": {
+    "check": "bun x tsc --noEmit",
+    "dev": "bun bin/loop.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "latest"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/bun": "latest"
+  },
+  "license": "MIT",
+  "author": "Paul Dariye",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dariye/loop"
+  },
+  "keywords": [
+    "claude",
+    "ai",
+    "github-actions",
+    "pipeline",
+    "code-review",
+    "automation"
+  ]
+}
