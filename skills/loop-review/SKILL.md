@@ -53,6 +53,17 @@ Read `PR_DIFF` thoroughly. For each changed file, understand:
 
 You may also explore the codebase (read-only) to understand surrounding context — for example, how a modified function is called elsewhere, or what existing tests cover.
 
+### 2b. Visual verification (when browser is available)
+
+If browser tools are available (`mcp__chrome-devtools__*`), use them to verify frontend changes:
+
+1. If the project has a dev server command, start it via Bash and navigate to the relevant page
+2. Take a screenshot to verify the visual result matches expectations
+3. Check the browser console for errors or warnings
+4. Note any visual issues in your review under the relevant criterion
+
+This step is optional — only perform it when browser tools are present and the changes are visual.
+
 ### 3. Load and apply review criteria
 
 Read each criterion file in [criteria/](criteria/) and evaluate the PR against it. Each criterion file defines what to check and severity guidance.

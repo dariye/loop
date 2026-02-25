@@ -36,6 +36,19 @@ describe("detectProject", () => {
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
       { stdout: "https://github.com/test/repo.git" },
     )
+    // detectFrontend template checks (app/views, resources/views, templates)
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("app/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("resources/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("/fake/root/templates"),
+      { exitCode: 1 },
+    )
 
     // We can't fully test file-based detection since Bun.file is not mocked,
     // but we test the exec-based paths
@@ -45,6 +58,7 @@ describe("detectProject", () => {
     expect(profile.existingSkills).toEqual([])
     expect(profile.gitRemote).toBe("https://github.com/test/repo.git")
     expect(profile.repoName).toBe("test/repo")
+    expect(profile.hasFrontend).toBe(false)
   })
 
   test("detects no CI when workflows dir missing", async () => {
@@ -64,10 +78,24 @@ describe("detectProject", () => {
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
       { exitCode: 1 },
     )
+    // detectFrontend template checks
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("app/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("resources/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("/fake/root/templates"),
+      { exitCode: 1 },
+    )
 
     const profile = await detectProject("/fake/root")
     expect(profile.hasCI).toBe(false)
     expect(profile.gitRemote).toBeNull()
+    expect(profile.hasFrontend).toBe(false)
   })
 
   test("detects overrides in .loop directory", async () => {
@@ -86,6 +114,19 @@ describe("detectProject", () => {
     expectCommand(
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
       { stdout: "git@github.com:user/project.git" },
+    )
+    // detectFrontend template checks
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("app/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("resources/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("/fake/root/templates"),
+      { exitCode: 1 },
     )
 
     const profile = await detectProject("/fake/root")
@@ -115,8 +156,22 @@ describe("detectProject", () => {
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
       { exitCode: 1 },
     )
+    // detectFrontend template checks
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("app/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("resources/views"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes("/home/user/my-project/templates"),
+      { exitCode: 1 },
+    )
 
     const profile = await detectProject("/home/user/my-project")
     expect(profile.repoName).toBe("my-project")
+    expect(profile.hasFrontend).toBe(false)
   })
 })

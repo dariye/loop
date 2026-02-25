@@ -13,6 +13,7 @@ export interface ProjectProfile {
   existingSkills: string[]
   gitRemote: string | null
   repoName: string | null
+  hasFrontend: boolean
 }
 
 export async function detectProject(root: string): Promise<ProjectProfile> {
@@ -32,6 +33,7 @@ export async function detectProject(root: string): Promise<ProjectProfile> {
 
   const repoName = deriveRepoName(gitRemote, root)
   const hasSkills = existingSkills.length > 0
+  const hasFrontend = await detectFrontend(root, framework)
 
   return {
     language,
@@ -46,6 +48,7 @@ export async function detectProject(root: string): Promise<ProjectProfile> {
     existingSkills,
     gitRemote,
     repoName,
+    hasFrontend,
   }
 }
 
@@ -199,6 +202,25 @@ async function getGitRemote(root: string): Promise<string | null> {
   const result = await exec(["git", "-C", root, "remote", "get-url", "origin"])
   if (result.exitCode !== 0) return null
   return result.stdout.trim() || null
+}
+
+async function detectFrontend(root: string, framework: string | null): Promise<boolean> {
+  const frontendFrameworks = ["next", "react", "vue", "svelte", "nuxt", "remix", "astro", "vite"]
+  if (frontendFrameworks.includes(framework ?? "")) return true
+
+  // Check for server-side template files (Rails, Laravel, Django)
+  const templatePatterns: [string, string][] = [
+    ["app/views", "*.erb"],      // Rails
+    ["resources/views", "*.blade.php"], // Laravel
+    ["templates", "*.html"],     // Django/Jinja
+  ]
+
+  for (const [dir, _ext] of templatePatterns) {
+    const result = await exec(["ls", `${root}/${dir}/`])
+    if (result.exitCode === 0 && result.stdout.trim().length > 0) return true
+  }
+
+  return false
 }
 
 function deriveRepoName(remote: string | null, root: string): string | null {

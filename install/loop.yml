@@ -57,6 +57,11 @@ on:
         required: false
         type: string
         default: "3"
+      browser:
+        description: "Enable headless browser (auto/true/false)"
+        required: false
+        type: string
+        default: "auto"
 
 # ---------------------------------------------------------------------------
 # Concurrency: one run per disc+target at a time, but never cancel in-progress
@@ -80,6 +85,7 @@ jobs:
       BUDGET: ${{ inputs.budget }}
       CHAIN: ${{ inputs.chain }}
       MAX_FIX_ROUNDS: ${{ inputs.max_fix_rounds }}
+      BROWSER: ${{ inputs.browser }}
 
     steps:
       # -----------------------------------------------------------------------
@@ -247,7 +253,55 @@ jobs:
           echo "::endgroup::"
 
       # -----------------------------------------------------------------------
-      # 7. Fetch design comment (for build disc — find the loop bot's design)
+      # 7. Detect browser need — opt-in headless Chrome for frontend PRs
+      # -----------------------------------------------------------------------
+      - name: Detect browser need
+        id: browser_detect
+        run: |
+          USE_BROWSER="false"
+
+          if [[ "$BROWSER" == "true" ]]; then
+            USE_BROWSER="true"
+          elif [[ "$BROWSER" == "false" ]]; then
+            USE_BROWSER="false"
+          elif [[ "$BROWSER" == "auto" ]]; then
+            # Read custom extensions from .loop/config.json if present, else use defaults
+            DEFAULT_EXTS='tsx|jsx|vue|svelte|css|scss|sass|less|html|erb|haml|slim|ejs|hbs|handlebars|pug|jade|blade\.php|twig|mustache|liquid|svg'
+            if [[ -f .loop/config.json ]]; then
+              CUSTOM_EXTS=$(jq -r '.browserExtensions // empty | join("|")' .loop/config.json 2>/dev/null)
+            fi
+            EXTS="${CUSTOM_EXTS:-$DEFAULT_EXTS}"
+
+            # Check if PR diff or issue context touches frontend files
+            CONTEXT=""
+            [[ -f /tmp/pr_context.txt ]] && CONTEXT+=$(cat /tmp/pr_context.txt)
+            [[ -f /tmp/issue_context.txt ]] && CONTEXT+=$(cat /tmp/issue_context.txt)
+
+            if echo "$CONTEXT" | grep -qE "\.($EXTS)"; then
+              USE_BROWSER="true"
+              echo "Auto-detected frontend changes — enabling browser"
+            fi
+          fi
+
+          echo "use_browser=$USE_BROWSER" >> "$GITHUB_OUTPUT"
+
+          if [[ "$USE_BROWSER" == "true" ]]; then
+            # Write MCP config for headless chrome-devtools
+            cat > /tmp/mcp-config.json <<'MCPEOF'
+          {
+            "mcpServers": {
+              "chrome-devtools": {
+                "command": "npx",
+                "args": ["chrome-devtools-mcp@latest", "--headless", "--isolated"]
+              }
+            }
+          }
+          MCPEOF
+            echo "Browser MCP config written to /tmp/mcp-config.json"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 8. Fetch design comment (for build disc — find the loop bot's design)
       # -----------------------------------------------------------------------
       - name: Fetch design comment
         id: design_context
@@ -275,7 +329,7 @@ jobs:
           echo "::endgroup::"
 
       # -----------------------------------------------------------------------
-      # 8. Run Claude Code — invoke phase skill by name
+      # 9. Run Claude Code — invoke phase skill by name
       # -----------------------------------------------------------------------
       - name: Run Claude Code
         id: claude
@@ -333,6 +387,14 @@ jobs:
               ;;
           esac
 
+          # --- Add browser tools if enabled ---
+          if [[ "${{ steps.browser_detect.outputs.use_browser }}" == "true" ]]; then
+            TOOLS+=",mcp__chrome-devtools__take_screenshot,mcp__chrome-devtools__take_snapshot,mcp__chrome-devtools__navigate_page,mcp__chrome-devtools__click,mcp__chrome-devtools__fill,mcp__chrome-devtools__evaluate_script,mcp__chrome-devtools__list_pages,mcp__chrome-devtools__list_console_messages,mcp__chrome-devtools__list_network_requests"
+            MCP_FLAGS="--mcp-config /tmp/mcp-config.json"
+          else
+            MCP_FLAGS=""
+          fi
+
           # --- Write user prompt to file to handle large payloads ---
           echo "$USER_PROMPT" > /tmp/user_prompt.txt
 
@@ -357,13 +419,14 @@ jobs:
             --permission-mode bypassPermissions \
             --allowedTools "$TOOLS" \
             --max-budget-usd "$BUDGET" \
+            $MCP_FLAGS \
             "$(cat /tmp/user_prompt.txt)" \
             | tee /tmp/claude_output.txt
 
           echo "::endgroup::"
 
       # -----------------------------------------------------------------------
-      # 9. Post artifacts — handle output per disc
+      # 10. Post artifacts — handle output per disc
       # -----------------------------------------------------------------------
 
       # --- Design: post comment on issue, add label ---
@@ -525,7 +588,7 @@ jobs:
           echo "Fixes pushed to $PR_BRANCH"
 
       # -----------------------------------------------------------------------
-      # 10. Auto-chain — trigger next disc if chain=true
+      # 11. Auto-chain — trigger next disc if chain=true
       # -----------------------------------------------------------------------
       - name: Auto-chain to next disc
         if: inputs.chain == 'true'

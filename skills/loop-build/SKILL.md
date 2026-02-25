@@ -58,6 +58,13 @@ After completing the implementation:
 - If a test fails, diagnose and fix the issue. Do not skip or disable tests.
 - If a test failure reveals a problem with the design, fix the implementation to be correct rather than blindly following a flawed design.
 
+### 4b. Visual verification (when browser is available)
+
+If browser tools are available (`mcp__chrome-devtools__*`) and you've made frontend changes:
+
+- Start the dev server and verify the UI renders without console errors
+- Take a screenshot to confirm the visual result
+
 ### 5. Commit changes
 
 Create clear, well-structured commits:

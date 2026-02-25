@@ -14,7 +14,7 @@ import {
   type WizardContext,
 } from "./ui/wizard.ts"
 
-const TOTAL_STEPS = 6
+const TOTAL_STEPS = 7
 
 export interface MountOptions {
   target?: string
@@ -23,6 +23,8 @@ export interface MountOptions {
 export interface LoopConfig {
   model?: string
   budget?: number
+  browser?: "auto" | "true" | "false"
+  browserExtensions?: string[]
 }
 
 export async function mount(opts: MountOptions): Promise<void> {
@@ -36,17 +38,20 @@ export async function mount(opts: MountOptions): Promise<void> {
     // Step 3: Skill Installation
     await stepSkillInstall(ctx, root, profile)
 
-    // Step 4: Secrets
+    // Step 4: Browser Configuration
+    const browserConfig = await stepBrowserConfig(ctx, profile)
+
+    // Step 5: Secrets
     await stepSecrets(ctx)
 
-    // Step 5: Defaults (Model + Budget)
-    const config = await stepDefaults(ctx)
+    // Step 6: Defaults (Model + Budget)
+    const config = await stepDefaults(ctx, browserConfig)
 
     // Write config
     const loopDir = await ensureLoopDir(root)
     await Bun.write(resolve(loopDir, "config.json"), JSON.stringify(config, null, 2) + "\n")
 
-    // Step 6: Doctor Verification
+    // Step 7: Doctor Verification
     await stepDoctor(ctx)
 
     // Always launch dashboard with onboarding
@@ -253,6 +258,65 @@ async function stepSkillInstall(ctx: WizardContext, root: string, profile: Proje
   }
 }
 
+const DEFAULT_BROWSER_EXTENSIONS = [
+  "tsx", "jsx", "vue", "svelte", "css", "scss", "sass", "less",
+  "html", "erb", "haml", "slim", "ejs", "hbs", "handlebars",
+  "pug", "jade", "blade.php", "twig", "mustache", "liquid", "svg",
+]
+
+async function stepBrowserConfig(
+  ctx: WizardContext,
+  profile: ProjectProfile,
+): Promise<Pick<LoopConfig, "browser" | "browserExtensions">> {
+  if (profile.hasFrontend) {
+    const fwLabel = profile.framework ?? "frontend files"
+    const choice = await promptSelect(ctx, 4, TOTAL_STEPS, `Frontend detected (${fwLabel}). Enable headless browser in CI?`, [
+      { name: "Enable (recommended)", description: "Auto-detect frontend file changes and verify with Chrome" },
+      { name: "Always on", description: "Run browser verification on every PR" },
+      { name: "Disable", description: "No browser verification in CI" },
+    ])
+
+    if (choice === 2) {
+      return { browser: "false" }
+    }
+
+    const browser = choice === 1 ? "true" as const : "auto" as const
+
+    // Ask for extension customization
+    const defaultExts = DEFAULT_BROWSER_EXTENSIONS.join(",")
+    const extsStr = await promptText(
+      ctx, 4, TOTAL_STEPS,
+      "Frontend file extensions (comma-separated)",
+      defaultExts,
+      "e.g. tsx,jsx,vue,css,html,erb",
+    )
+
+    const browserExtensions = extsStr.split(",").map((s) => s.trim()).filter(Boolean)
+    return { browser, browserExtensions }
+  }
+
+  // No frontend detected
+  const choice = await promptSelect(ctx, 4, TOTAL_STEPS, "No frontend framework detected. Enable headless browser for template files?", [
+    { name: "Enable", description: "Auto-detect changes to .erb, .haml, .html, etc." },
+    { name: "Disable (recommended)", description: "Skip browser verification" },
+  ])
+
+  if (choice === 1) {
+    return { browser: "false" }
+  }
+
+  const defaultExts = DEFAULT_BROWSER_EXTENSIONS.join(",")
+  const extsStr = await promptText(
+    ctx, 4, TOTAL_STEPS,
+    "Frontend file extensions (comma-separated)",
+    defaultExts,
+    "e.g. tsx,jsx,vue,css,html,erb",
+  )
+
+  const browserExtensions = extsStr.split(",").map((s) => s.trim()).filter(Boolean)
+  return { browser: "auto", browserExtensions }
+}
+
 async function stepSecrets(ctx: WizardContext): Promise<void> {
   const apiKeyStatus = await checkSecret("ANTHROPIC_API_KEY")
   const patStatus = await checkSecret("LOOP_PAT")
@@ -271,7 +335,7 @@ async function stepSecrets(ctx: WizardContext): Promise<void> {
 
   // Offer to set missing secrets
   if (apiKeyStatus === "not_found") {
-    const setKey = await promptSelect(ctx, 4, TOTAL_STEPS, "ANTHROPIC_API_KEY is missing", [
+    const setKey = await promptSelect(ctx, 5, TOTAL_STEPS, "ANTHROPIC_API_KEY is missing", [
       { name: "Set now", description: "Run gh secret set ANTHROPIC_API_KEY" },
       { name: "Skip", description: "Set it manually later" },
     ])
@@ -292,7 +356,7 @@ async function stepSecrets(ctx: WizardContext): Promise<void> {
   }
 
   if (patStatus === "not_found") {
-    const setPat = await promptSelect(ctx, 4, TOTAL_STEPS, "LOOP_PAT enables auto-chaining", [
+    const setPat = await promptSelect(ctx, 5, TOTAL_STEPS, "LOOP_PAT enables auto-chaining", [
       { name: "Set now", description: "Run gh secret set LOOP_PAT" },
       { name: "Skip", description: "Set it manually later (chaining disabled)" },
     ])
@@ -311,8 +375,8 @@ async function stepSecrets(ctx: WizardContext): Promise<void> {
   }
 }
 
-async function stepDefaults(ctx: WizardContext): Promise<LoopConfig> {
-  const modelIndex = await promptSelect(ctx, 5, TOTAL_STEPS, "Default Claude model", [
+async function stepDefaults(ctx: WizardContext, browserConfig: Pick<LoopConfig, "browser" | "browserExtensions">): Promise<LoopConfig> {
+  const modelIndex = await promptSelect(ctx, 6, TOTAL_STEPS, "Default Claude model", [
     { name: "sonnet (recommended)", description: "Best balance of speed and quality" },
     { name: "opus", description: "Maximum quality, slower" },
     { name: "haiku", description: "Fastest, most economical" },
@@ -321,10 +385,10 @@ async function stepDefaults(ctx: WizardContext): Promise<LoopConfig> {
   const modelMap = ["sonnet", "opus", "haiku"]
   const model = modelMap[modelIndex]
 
-  const budgetStr = await promptText(ctx, 5, TOTAL_STEPS, "Default budget (USD per run)", "5", "e.g. 5")
+  const budgetStr = await promptText(ctx, 6, TOTAL_STEPS, "Default budget (USD per run)", "5", "e.g. 5")
   const budget = parseFloat(budgetStr) || 5
 
-  return { model, budget }
+  return { model, budget, ...browserConfig }
 }
 
 async function stepDoctor(ctx: WizardContext): Promise<void> {
@@ -346,7 +410,7 @@ async function stepDoctor(ctx: WizardContext): Promise<void> {
   await Bun.sleep(1000)
 
   if (fail > 0) {
-    const action = await promptSelect(ctx, 6, TOTAL_STEPS, `${fail} check(s) failed`, [
+    const action = await promptSelect(ctx, 7, TOTAL_STEPS, `${fail} check(s) failed`, [
       { name: "Run auto-fix", description: "Attempt to fix issues automatically" },
       { name: "Continue anyway", description: "Proceed with setup despite failures" },
     ])
