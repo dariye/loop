@@ -127,10 +127,9 @@ Each `loop.yml` dispatch runs this sequence on GitHub Actions:
 │  2. Checkout repo            (full git history)          │
 │  3. Install Claude Code      (npm -g)                    │
 │  4. Fetch context            (issue, PR, design, epic)   │
-│  5. Resolve prompt           (.loop/<phase>.md or default)│
-│  6. Run Claude Code          (scoped tools per phase)    │
-│  7. Post artifacts           (comment / PR / review)     │
-│  8. Auto-chain               (→ next phase if chain=true)│
+│  5. Run Claude Code          (invoke /loop-<phase> skill)│
+│  6. Post artifacts           (comment / PR / review)     │
+│  7. Auto-chain               (→ next phase if chain=true)│
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -159,17 +158,17 @@ Auto-chaining requires the `LOOP_PAT` secret because `GITHUB_TOKEN` cannot trigg
 
 ## Customization
 
-Override the default prompts for any phase by creating files in your repo:
+Each phase is a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) installed to `.claude/skills/`:
 
 ```
-.loop/
-├── design.md
-├── build.md
-├── review.md
-└── fix.md
+.claude/skills/
+├── loop-design/SKILL.md
+├── loop-build/SKILL.md
+├── loop-review/SKILL.md
+└── loop-fix/SKILL.md
 ```
 
-Loop checks for `.loop/<phase>.md` first and falls back to built-in defaults.
+`loop mount` installs these automatically. Edit any `SKILL.md` to customize the phase prompt. Skills are also available locally — invoke `/loop-design`, `/loop-build`, etc. directly in Claude Code.
 
 ### Epic Convention
 
