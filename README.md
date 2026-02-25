@@ -71,6 +71,7 @@ loop fix 17           # Address review feedback, push fixes
 ```bash
 loop --model opus run 42      # Use a specific Claude model
 loop --budget 10 build 42     # Set max budget in USD
+loop --browser true review 17 # Force headless browser for this run
 ```
 
 ### TUI Dashboard
@@ -127,9 +128,10 @@ Each `loop.yml` dispatch runs this sequence on GitHub Actions:
 │  2. Checkout repo            (full git history)          │
 │  3. Install Claude Code      (npm -g)                    │
 │  4. Fetch context            (issue, PR, design, epic)   │
-│  5. Run Claude Code          (invoke /loop-<phase> skill)│
-│  6. Post artifacts           (comment / PR / review)     │
-│  7. Auto-chain               (→ next phase if chain=true)│
+│  5. Detect browser need      (auto/true/false)           │
+│  6. Run Claude Code          (invoke /loop-<phase> skill)│
+│  7. Post artifacts           (comment / PR / review)     │
+│  8. Auto-chain               (→ next phase if chain=true)│
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -156,6 +158,31 @@ The fix/review loop runs up to 3 rounds (configurable via `max_fix_rounds`).
 
 Auto-chaining requires the `LOOP_PAT` secret because `GITHUB_TOKEN` cannot trigger `workflow_dispatch` events.
 
+## Browser Verification
+
+Loop can launch a headless Chrome browser in CI to visually verify frontend changes. This uses the `chrome-devtools-mcp` server, giving Claude screenshot, DOM inspection, and console access during review and build phases.
+
+**Three-layer opt-in:**
+
+| Layer | How | When |
+|-------|-----|------|
+| Explicit | `browser: "true"` workflow input | Force on/off per run |
+| Auto-detect | `browser: "auto"` (default) | PR diff touches frontend files (`.tsx`, `.jsx`, `.vue`, `.css`, `.html`, `.erb`, etc.) |
+| Config | `.loop/config.json` | Set defaults during `loop mount` |
+
+The mount wizard detects frontend projects and prompts for browser configuration:
+
+```json
+{
+  "model": "sonnet",
+  "budget": 5,
+  "browser": "auto",
+  "browserExtensions": ["tsx", "jsx", "vue", "svelte", "css", "scss", "html", "erb"]
+}
+```
+
+When enabled, the workflow writes an MCP config and passes `--mcp-config` to `claude -p`, adding browser tools (`take_screenshot`, `take_snapshot`, `navigate_page`, etc.) to the allowed tools list.
+
 ## Customization
 
 Each phase is a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) installed to `.claude/skills/`:
@@ -169,6 +196,26 @@ Each phase is a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-co
 ```
 
 `loop mount` installs these automatically. Edit any `SKILL.md` to customize the phase prompt. Skills are also available locally — invoke `/loop-design`, `/loop-build`, etc. directly in Claude Code.
+
+### Configuration
+
+`loop mount` writes project defaults to `.loop/config.json`:
+
+```json
+{
+  "model": "sonnet",
+  "budget": 5,
+  "browser": "auto",
+  "browserExtensions": ["tsx", "jsx", "vue", "svelte", "css", "html"]
+}
+```
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `model` | Claude model for CI runs | `"sonnet"` |
+| `budget` | Max USD per run | `5` |
+| `browser` | Headless browser mode (`"auto"`, `"true"`, `"false"`) | `"auto"` |
+| `browserExtensions` | File extensions that trigger browser auto-detection | See defaults |
 
 ### Epic Convention
 
