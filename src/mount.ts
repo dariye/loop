@@ -1,7 +1,7 @@
 import { resolve } from "path"
 import { exec } from "./shell.ts"
 import { detectProject, type ProjectProfile } from "./detect.ts"
-import { installWorkflow, ensureLoopDir } from "./install.ts"
+import { installWorkflow, ensureLoopDir, ensureSkillsDir, installSkills } from "./install.ts"
 import { runChecks } from "./doctor.ts"
 import { checkSecret } from "./deps.ts"
 import {
@@ -33,8 +33,8 @@ export async function mount(opts: MountOptions): Promise<void> {
     // Step 2: Install Workflow
     await stepInstallWorkflow(ctx, root, profile)
 
-    // Step 3: Phase Prompt Customization
-    await stepPhasePrompts(ctx, root, profile)
+    // Step 3: Skill Installation
+    await stepSkillInstall(ctx, root, profile)
 
     // Step 4: Secrets
     await stepSecrets(ctx)
@@ -215,54 +215,39 @@ async function stepInstallWorkflow(ctx: WizardContext, root: string, profile: Pr
   await Bun.sleep(800)
 }
 
-async function stepPhasePrompts(ctx: WizardContext, root: string, profile: ProjectProfile): Promise<void> {
-  const choice = await promptSelect(ctx, 3, TOTAL_STEPS, "Phase Prompts", [
-    { name: "Use defaults (recommended)", description: "Built-in prompts work great for most projects" },
-    { name: "Customize prompts", description: "Create .loop/ overrides for each phase" },
+async function stepSkillInstall(ctx: WizardContext, root: string, profile: ProjectProfile): Promise<void> {
+  const choice = await promptSelect(ctx, 3, TOTAL_STEPS, "Phase Skills", [
+    { name: "Install skills (recommended)", description: "Install loop-design, loop-build, loop-review, loop-fix to .claude/skills/" },
+    { name: "Customize skills", description: "Install as editable templates you can modify" },
   ])
 
-  if (choice === 0) return // Use defaults
+  if (profile.hasSkills) {
+    const overwrite = await promptConfirm(
+      ctx, 3, TOTAL_STEPS,
+      "Skills already installed. Overwrite?",
+      false,
+    )
+    if (!overwrite) return
+  }
 
-  const loopDir = await ensureLoopDir(root)
-  const phases = ["design", "build", "review", "fix"] as const
-  const packageRoot = resolve(import.meta.dir, "..")
+  showStatus(ctx, "Installing skills...", [
+    { icon: "⟳", label: "Skills", value: ".claude/skills/loop-*" },
+  ])
 
-  for (const phase of phases) {
-    const existing = profile.existingOverrides.includes(`${phase}.md`)
-    if (existing) {
-      const overwrite = await promptConfirm(
-        ctx, 3, TOTAL_STEPS,
-        `${phase}.md already exists. Overwrite?`,
-        false,
-      )
-      if (!overwrite) continue
-    }
+  const installed = await installSkills(root)
 
-    const action = await promptSelect(ctx, 3, TOTAL_STEPS, `${phase} phase prompt`, [
-      { name: "Skip (use default)", description: `Use built-in ${phase} prompt` },
-      { name: "Create from template", description: `Copy default ${phase}.md to .loop/ for editing` },
-      { name: "Create empty", description: `Create blank ${phase}.md stub` },
+  showStatus(ctx, `${installed.length} skills installed`, installed.map((s) => ({
+    icon: "✓",
+    label: s,
+    value: ".claude/skills/" + s + "/SKILL.md",
+  })))
+  await Bun.sleep(800)
+
+  if (choice === 1) {
+    showStatus(ctx, "Skills installed as editable templates", [
+      { icon: "✎", label: "Edit", value: ".claude/skills/loop-*/SKILL.md" },
     ])
-
-    if (action === 0) continue
-
-    const targetPath = resolve(loopDir, `${phase}.md`)
-
-    if (action === 1) {
-      // Copy from discs/ template
-      const templatePath = resolve(packageRoot, "discs", `${phase}.md`)
-      const templateFile = Bun.file(templatePath)
-      if (await templateFile.exists()) {
-        const content = await templateFile.text()
-        await Bun.write(targetPath, content)
-      } else {
-        // Template not found, create with header
-        await Bun.write(targetPath, `# ${phase}\n\nCustomize your ${phase} phase prompt here.\n`)
-      }
-    } else {
-      // Create empty stub
-      await Bun.write(targetPath, `# ${phase}\n\nCustomize your ${phase} phase prompt here.\n`)
-    }
+    await Bun.sleep(500)
   }
 }
 

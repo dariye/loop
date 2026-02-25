@@ -10,7 +10,7 @@
     "bin/",
     "src/",
     "install/",
-    "discs/"
+    "skills/"
   ],
   "scripts": {
     "check": "bun x tsc --noEmit",

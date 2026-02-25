@@ -70,6 +70,49 @@ export async function ensureLoopDir(root: string): Promise<string> {
   return loopDir;
 }
 
+/**
+ * Ensure .claude/skills/ directory exists. Returns the path to the directory.
+ */
+export async function ensureSkillsDir(root: string): Promise<string> {
+  const skillsDir = resolve(root, ".claude", "skills");
+  const mkProc = Bun.spawn(["mkdir", "-p", skillsDir], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await mkProc.exited;
+  return skillsDir;
+}
+
+/**
+ * Install all loop skill folders from package skills/ to .claude/skills/.
+ * Returns the list of installed skill names.
+ */
+export async function installSkills(root: string): Promise<string[]> {
+  const skillsDir = await ensureSkillsDir(root);
+  const packageRoot = resolve(import.meta.dir, "..");
+  const phases = ["loop-design", "loop-build", "loop-review", "loop-fix"];
+  const installed: string[] = [];
+
+  for (const skill of phases) {
+    const srcPath = resolve(packageRoot, "skills", skill, "SKILL.md");
+    const srcFile = Bun.file(srcPath);
+    if (!(await srcFile.exists())) continue;
+
+    const destDir = resolve(skillsDir, skill);
+    const mkProc = Bun.spawn(["mkdir", "-p", destDir], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await mkProc.exited;
+
+    const content = await srcFile.text();
+    await Bun.write(resolve(destDir, "SKILL.md"), content);
+    installed.push(skill);
+  }
+
+  return installed;
+}
+
 export async function install(opts?: { dev?: boolean }): Promise<void> {
   const root = await gitRoot();
 
@@ -110,16 +153,20 @@ export async function install(opts?: { dev?: boolean }): Promise<void> {
     });
     await linkProc.exited;
 
-    // Create .loop/ directory for custom prompt overrides
+    // Create .loop/ directory for config
     const loopDir = await ensureLoopDir(root);
-    console.log(`\nCreated ${loopDir}/ for custom prompt overrides`);
+    console.log(`\nCreated ${loopDir}/`);
+
+    // Install skills
+    const skills = await installSkills(root);
+    console.log(`Installed ${skills.length} skills to .claude/skills/`);
 
     console.log("\nDev setup complete!");
     console.log();
     console.log("Next steps:");
     console.log("  1. Run: bun bin/loop.ts doctor     — verify environment");
     console.log("  2. Run: bun bin/loop.ts --help      — see all commands");
-    console.log("  3. Edit discs in .loop/ to customize prompts");
+    console.log("  3. Edit skills in .claude/skills/ to customize prompts");
   } else {
     console.log();
     console.log("Next steps:");

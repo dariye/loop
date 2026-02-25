@@ -275,95 +275,7 @@ jobs:
           echo "::endgroup::"
 
       # -----------------------------------------------------------------------
-      # 8. Resolve system prompt — repo-local .loop/<disc>.md or bundled default
-      # -----------------------------------------------------------------------
-      - name: Resolve system prompt
-        id: system_prompt
-        run: |
-          REPO_PROMPT=".loop/${DISC}.md"
-
-          if [[ -f "$REPO_PROMPT" ]]; then
-            echo "Using repo-local system prompt: $REPO_PROMPT"
-            SYSTEM_PROMPT=$(cat "$REPO_PROMPT")
-          else
-            echo "No repo-local prompt at $REPO_PROMPT — using bundled default"
-
-            case "$DISC" in
-              design)
-                SYSTEM_PROMPT=$(cat <<'PROMPT'
-          You are a senior software architect. Analyze the provided issue and produce a
-          detailed design document. Your design should include:
-
-          1. **Summary** — restate the problem in your own words
-          2. **Approach** — describe the implementation strategy
-          3. **Files to change** — list specific files and what changes are needed
-          4. **Edge cases** — identify potential issues and how to handle them
-          5. **Testing strategy** — describe how the changes should be tested
-
-          Be thorough but concise. Reference specific files, functions, and line numbers
-          from the codebase when possible. Do NOT make any changes to the code — only
-          produce the design document as your final output.
-          PROMPT
-                )
-                ;;
-              build)
-                SYSTEM_PROMPT=$(cat <<'PROMPT'
-          You are a senior software engineer. Implement the changes described in the
-          design document and issue. Follow these principles:
-
-          1. Make minimal, focused changes that address the issue
-          2. Follow existing code style and conventions in the repository
-          3. Write clean, well-documented code
-          4. Add or update tests as appropriate
-          5. Do NOT modify files unrelated to the issue
-
-          After making all changes, output a brief summary of what you changed and why.
-          PROMPT
-                )
-                ;;
-              review)
-                SYSTEM_PROMPT=$(cat <<'PROMPT'
-          You are a senior code reviewer. Review the provided PR diff thoroughly.
-          Check for:
-
-          1. **Correctness** — does the code do what the issue/PR description says?
-          2. **Bugs** — are there logic errors, off-by-one errors, race conditions?
-          3. **Style** — does the code follow the repo's conventions?
-          4. **Security** — are there injection risks, credential leaks, etc.?
-          5. **Tests** — are changes adequately tested?
-          6. **Scope** — are there unnecessary changes outside the stated goal?
-
-          At the END of your review, output exactly one of these two markers on its own line:
-            REVIEW_PASS
-            REVIEW_FAIL
-
-          If you output REVIEW_FAIL, list the specific items that must be fixed.
-          PROMPT
-                )
-                ;;
-              fix)
-                SYSTEM_PROMPT=$(cat <<'PROMPT'
-          You are a senior software engineer. The PR has received review feedback
-          that must be addressed. Read the review comments carefully and make the
-          requested fixes. Follow these principles:
-
-          1. Address every piece of actionable feedback
-          2. Do not make unrelated changes
-          3. Follow existing code style
-          4. Update tests if the fixes require it
-
-          After making all fixes, output a brief summary of what you changed.
-          PROMPT
-                )
-                ;;
-            esac
-          fi
-
-          # Write system prompt to file to avoid quoting issues
-          echo "$SYSTEM_PROMPT" > /tmp/system_prompt.txt
-
-      # -----------------------------------------------------------------------
-      # 9. Run Claude Code
+      # 8. Run Claude Code — invoke phase skill by name
       # -----------------------------------------------------------------------
       - name: Run Claude Code
         id: claude
@@ -421,29 +333,25 @@ jobs:
               ;;
           esac
 
-          # --- Read system prompt from file ---
-          SYSTEM_PROMPT=$(cat /tmp/system_prompt.txt)
-
           # --- Write user prompt to file to handle large payloads ---
           echo "$USER_PROMPT" > /tmp/user_prompt.txt
 
           echo "::group::Running Claude ($DISC phase, model=$MODEL, budget=\$$BUDGET)"
           echo "Tools: $TOOLS"
 
-          # Run Claude Code and capture output
+          # Invoke the phase skill directly — no --system-prompt needed
           claude -p \
             --model "$MODEL" \
-            --system-prompt "$SYSTEM_PROMPT" \
             --permission-mode bypassPermissions \
             --allowedTools "$TOOLS" \
             --max-budget-usd "$BUDGET" \
-            "$(cat /tmp/user_prompt.txt)" \
+            "/loop-${DISC} $(cat /tmp/user_prompt.txt)" \
             | tee /tmp/claude_output.txt
 
           echo "::endgroup::"
 
       # -----------------------------------------------------------------------
-      # 10. Post artifacts — handle output per disc
+      # 9. Post artifacts — handle output per disc
       # -----------------------------------------------------------------------
 
       # --- Design: post comment on issue, add label ---
@@ -605,7 +513,7 @@ jobs:
           echo "Fixes pushed to $PR_BRANCH"
 
       # -----------------------------------------------------------------------
-      # 11. Auto-chain — trigger next disc if chain=true
+      # 10. Auto-chain — trigger next disc if chain=true
       # -----------------------------------------------------------------------
       - name: Auto-chain to next disc
         if: inputs.chain == 'true'

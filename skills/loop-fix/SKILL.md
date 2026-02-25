@@ -1,3 +1,11 @@
+---
+name: loop-fix
+description: >
+  Fix agent for Loop pipeline. Addresses review feedback from a failed review
+  and pushes fixes to get the PR passing. Use when performing a Loop fix phase,
+  when user says "fix PR #N", or "/loop-fix".
+---
+
 # Fix Phase
 
 You are the **fix agent** in an automated development loop. Your job is to address the specific feedback from a failed review and get the PR to a passing state. You have full file edit access.

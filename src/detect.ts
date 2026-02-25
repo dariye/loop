@@ -9,12 +9,14 @@ export interface ProjectProfile {
   hasLoop: boolean
   hasLoopDir: boolean
   existingOverrides: string[]
+  hasSkills: boolean
+  existingSkills: string[]
   gitRemote: string | null
   repoName: string | null
 }
 
 export async function detectProject(root: string): Promise<ProjectProfile> {
-  const [language, framework, testRunner, packageManager, hasCI, hasLoop, hasLoopDir, existingOverrides, gitRemote] =
+  const [language, framework, testRunner, packageManager, hasCI, hasLoop, hasLoopDir, existingOverrides, existingSkills, gitRemote] =
     await Promise.all([
       detectLanguage(root),
       detectFramework(root),
@@ -24,10 +26,12 @@ export async function detectProject(root: string): Promise<ProjectProfile> {
       checkExists(`${root}/.github/workflows/loop.yml`),
       checkExists(`${root}/.loop`),
       listOverrides(root),
+      listSkills(root),
       getGitRemote(root),
     ])
 
   const repoName = deriveRepoName(gitRemote, root)
+  const hasSkills = existingSkills.length > 0
 
   return {
     language,
@@ -38,6 +42,8 @@ export async function detectProject(root: string): Promise<ProjectProfile> {
     hasLoop,
     hasLoopDir,
     existingOverrides,
+    hasSkills,
+    existingSkills,
     gitRemote,
     repoName,
   }
@@ -178,6 +184,15 @@ async function listOverrides(root: string): Promise<string[]> {
     .split("\n")
     .map((f) => f.trim())
     .filter((f) => f.endsWith(".md"))
+}
+
+async function listSkills(root: string): Promise<string[]> {
+  const result = await exec(["ls", `${root}/.claude/skills/`])
+  if (result.exitCode !== 0) return []
+  return result.stdout
+    .split("\n")
+    .map((f) => f.trim())
+    .filter((f) => f.startsWith("loop-"))
 }
 
 async function getGitRemote(root: string): Promise<string | null> {

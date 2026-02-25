@@ -26,6 +26,11 @@ describe("detectProject", () => {
       (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".loop"),
       { exitCode: 1 },
     )
+    // listSkills uses exec(["ls", ...])
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".claude/skills"),
+      { exitCode: 1 },
+    )
     // getGitRemote
     expectCommand(
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
@@ -36,6 +41,8 @@ describe("detectProject", () => {
     // but we test the exec-based paths
     const profile = await detectProject("/fake/root")
     expect(profile.hasCI).toBe(true)
+    expect(profile.hasSkills).toBe(false)
+    expect(profile.existingSkills).toEqual([])
     expect(profile.gitRemote).toBe("https://github.com/test/repo.git")
     expect(profile.repoName).toBe("test/repo")
   })
@@ -47,6 +54,10 @@ describe("detectProject", () => {
     )
     expectCommand(
       (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".loop"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".claude/skills"),
       { exitCode: 1 },
     )
     expectCommand(
@@ -69,6 +80,10 @@ describe("detectProject", () => {
       { stdout: "design.md\nbuild.md\n.gitkeep" },
     )
     expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".claude/skills"),
+      { stdout: "loop-design\nloop-build" },
+    )
+    expectCommand(
       (cmd) => cmd[0] === "git" && cmd.includes("get-url"),
       { stdout: "git@github.com:user/project.git" },
     )
@@ -77,6 +92,9 @@ describe("detectProject", () => {
     expect(profile.existingOverrides).toContain("design.md")
     expect(profile.existingOverrides).toContain("build.md")
     expect(profile.existingOverrides).not.toContain(".gitkeep")
+    expect(profile.hasSkills).toBe(true)
+    expect(profile.existingSkills).toContain("loop-design")
+    expect(profile.existingSkills).toContain("loop-build")
     expect(profile.repoName).toBe("user/project")
   })
 
@@ -87,6 +105,10 @@ describe("detectProject", () => {
     )
     expectCommand(
       (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".loop"),
+      { exitCode: 1 },
+    )
+    expectCommand(
+      (cmd) => cmd[0] === "ls" && cmd[1]?.includes(".claude/skills"),
       { exitCode: 1 },
     )
     expectCommand(
